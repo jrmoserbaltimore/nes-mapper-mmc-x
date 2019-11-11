@@ -1,0 +1,450 @@
+MMC-X
+
+An 8-bit MMU, 16 address lines, 8 data lines.
+
+PRG ROM CAPACITY:  4GB (Unlimited with filesystem extension)
+PRG RAM CAPACITY:  131072K (128M)
+PRG RAM WINDOW:    2K/4K + 8K/16K + 4K fixed ROM
+CHR CAPACITY:      Shared with PRG RAM
+CHR WINDOW:        4096 Pattern, 1024 Namespace
+
+Target component cost:     $11
+Target board cost:         $ 4
+Target assembly cost:      $ 5 (10 minutes, $30/hr)
+Cartridge target cost:     $20
+
+==========
+=OVERVIEW=
+==========
+
+This document describes a proposed MMU for CPUs with 16-bit address lines and
+8 data lines.  It targets the 8-bit Nintendo Entertainment System, although
+the MMU is adaptable to any 6502-based system such as the Commodore 64.
+
+The reference implementation of this MMU is FPGA, using the following parts:
+
+ - 5V to 3.3V Buck Power Supply Circuit (Total: 66¢)
+   - One TI LM3670MF-3.3/NOPB buck converter ($0.44)
+   - One 10uH 800mA inductor SRN3010TA-100M ($0.11)
+   - One 10uF ceramic capacitor CM105X5R106M25AT ($0.07)
+   - One 4.7uF ceramic capacitor CM05X5R475M10AH ($0.02)
+   - Two 0.1uf capacitors ($0.01)
+ - FPGA Circuit (Total:  $8.30)
+   - Two Texas Instruments SN74CBTD16211DGVR 24-bit bidirectional bus level
+     shifters ($1.60)
+   - One TI LSF0204QPWRQ1 4-bit bidirectional level shifter ($0.50)
+   - One TI TXB0108YZPR2 8-bit bidirectional level shifter 
+   - Intel 10M02SCM153C8G FPGA (2,000 LUTs, 112 IOs, 450MHz, $4.60)
+ - PRG ROM Circuit (Total: $1.86)
+   - One Microchip Technology SST39LF010-55-4C-NHE 1Mb NOR Flash ($0.71)
+
+(Note:  this is simpler, but 45¢ more components than using a TI LSF0204QPWRQ1
+4-bit bidirectional level shifter ($0.50) plus a TI TXB0108YZPR2 8-bit
+bidirectional level shifter (
+
+Hardware implementation should cost about $11 in bulk, plus PCB.  Existing
+flash carts should handle the MMU with no difficulty.  Mapper 30 boards sell
+for $15 in bulk, in comparison.
+
+The TI level shifter converts from 5V to 3.3V for 24 pins.  The diagram looks
+as such:
+
+
+5V-------------.            .----------------------------.-----3.3V
+     |         | vccIn      | vccOut             |       |
+0.1uF=     ------------------              ----------    = 0.1uF
+     |    |SN74CBTD16211DGVR |  3.3V bus  |   FPGA   |   |
+     | <->|D0              D0|<---------->|D0        |   |
+     | <->|D1              D1|<---------->|D1        |   |
+     | <->|D2              D2|<---------->|D2        |   |
+     | <->|D3              D3|<---------->|D3        |   |
+     | <->|D4              D4|<---------->|D4        |   |
+     | <->|D5              D5|<---------->|D5        |   |
+     | <->|D6              D6|<---------->|D6        |   |
+     | <->|D7              D7|<---------->|D7        |   |
+     | <->|A0              A0|<---------->|A0        |   |
+     | <->|A1              A1|<---------->|A1        |   |
+     | <->|A2              A2|<---------->|A2        |   |
+     | <->|A3-15        A3-15|<---------->|A3-15     |   |
+     |     ------------------              ----------    |
+     |         |                                 |       |
+ GND------------                                 ----------GND
+
+IO requirements:
+
+ - 16 CPU Address lines
+ - 8 CPU Data lines
+ - 1 CPU WR line
+ - 1 CPU Clock
+ - 13 PPU Address lines
+ - 8 PPU Data lines
+ - 1 PPU WR line
+ - 1 PPU Clock
+ - 1 IRQ Out
+
+This occupies 50 of the 112 I/O ports on the FPGA, level-shifted to 3.3V.
+
+An additional 49 of the remaining 72 I/Os are necessary to access a DRAM chip,
+such as a IS42S81600F-7TL 128Mb (16Mo) DRAM chip ($1.80).  Timing delays
+operate at hundreds of MHz versus the NES 1MHz clock.
+
+It may be a viable option to use a $1.27 1Gb NAND and copy to 128Mb of DRAM.
+This would consume 6 of the remaining 23 I/Os for NAND.
+
+That leaves 17 unused IOs.
+
+This particular Intel FPGA stores programming configuration in internal flash,
+and requires 10mS to boot.  The 4Ko of PRG ROM at the top of memory space
+keeps the NES in a sensible state until then.  One frame is over 16mS, and
+attempting to map and read PRG RAM each VBLANK should be a sufficient test.
+
+This brings the cartridge cost to around $12-$15 including ROM and RAM.
+
+============
+= Behavior =
+============
+
+In all configurations, the FPGA behaves as such:
+
+ - If A1-A15 indicates anything outside $4020-$C000, behave as open bus
+ - Forward all other mappings to RAM/ROM behind bus
+
+===========
+= Mapping =
+===========
+
+The mapping for memory under this MMU is as follows:
+
+START   END     SIZE    PURPOSE
+$4000   $4019   20      Reserved for NES
+$4020   $4034   21      12-bit Low RAM/ROM page mapping registers
+$4035   $4037   3       12-bit High RAM/ROM page mapping registers
+$4038   $4038   1       Mode Switch (0-3)
+$4039   $4039   1       Register file
+$4040   $4040   1       4-bit Pattern Table 0 and 1 banks (4096)
+$4041   $4041   1       4-bit Nametable 0 and 1 banks (1024)
+$4042   $4042   1       4-bit Nametable 2 and 3 banks (1024)
+$4043   $4043   1       MMU Operations
+$4044	$40FF   188     Reserved for extensions
+$4000   $9999   28K     Low RAM/ROM mapping
+$B000   $E999   16K     High RAM/ROM mapping
+$F000   $FFFF   4K      Fixed PRG ROM
+
+The PPU memory space looks as follows:
+
+START   END     SIZE    PURPOSE
+$0000   $0FFF   4096    Pattern table 0
+$1000   $1FFF   4096    Pattern table 1
+$2000   $23FF   1024    Nametable 0
+$2400   $27FF   1024    Nametable 1
+$2800   $27FF   1024    Nametable 2
+$2C00   $2FFF   1024    Nametable 3
+$3000   $3EFF   4064    Nametable mirrors
+
+The PPU mappings don't simply target the beginning of physical RAM or ROM;
+rather, the banks are 192K of physical addressing space beginning at 1MB.
+Nametables are offset in single four-namespace pages, such that each of 16
+Nametable pages contains four Nametables.
+
+The entire PPU space is 12K or three Mode 1 Low-RAM pages; however, a page
+cannot be mapped simultaneously to PPU and CPU.  MMU Copy operations can copy
+a PPU table to another 96K page and allow the CPU to operate on it directly
+before page-flipping.
+
+The register file byte looks as thus:
+
+BIT   USE
+0-2   Register file (0-8)
+3     Half-file selector
+
+=============================
+= Converting from Mapper 30 =
+=============================
+
+The mapping for the common UNROM-512 (iNES Mapper 30) homebrew mapper is as
+follows:
+
+START   END     SIZE    PURPOSE
+$4000   $4019   20      Reserved for NES
+$4020   $4034   21      12-bit Low RAM/ROM page mapping registers
+$4035   $4037   3       12-bit High RAM/ROM page mapping registers
+$4038   $4038   1       Mode Switch (0-3)
+$4039   $4039   1       Register file
+$4040   $4040   1       4-bit Pattern Table 0 and 1 banks (4096)
+$4041   $4041   1       4-bit Nametable 0 and 1 banks (1024)
+$4042   $4042   1       4-bit Nametable 2 and 3 banks (1024)
+$4043   $4043   1       MMU Operations
+$4044	$40FF   188     Reserved for extensions
+$4000   $9999   28K     Low RAM/ROM mapping
+$B000   $E999   16K     High RAM/ROM mapping
+$F000   $FFFF   4K      Fixed PRG ROM
+
+
+
+==================
+= MMU Operations =
+==================
+
+MMU Operations are written to address $4043, which reads two nybbles
+[pppp wwww] as such:
+
+NYBBLE   MEANING
+pppp     Which mapped page (0-15) to read
+wwww     Which 16-bit word (0-15) to read
+
+Note that the MMU can access the first 32 bytes of the RAM or ROM mapped to the
+page, while the CPU can't.
+
+The MMU reads two bytes at the given bank and word offset, and uses those to
+read an offset in the same bank.  At that offset will be a table of the below
+form:
+
+BYTE   MEANING
+1-3    Source and Destination bank (12-bit addresses) (64k banks)
+4-5    Source bank offset
+6-7    Destination bank offset
+8-9    Length
+10     Operation
+
+Operations supported include:
+
+INDEX  OPERATION
+0      Copy (copies bytes from one offset to the next; will cross pages)
+1      Add bytes (no carry)
+2      Add words (carry for 16-bit values)
+3      Add dwords (carry for 32-bit values)
+4      Add with full carry
+5      Subtract bytes
+6      Subtract words
+7      Subtract dwords
+8      Subtract with full carry
+9      Multiply bytes
+10     Multiply words
+11     Multiply dwords
+12     Divide bytes
+13     Divide words
+14     Divide dwords
+
+Note that all banks are addressed as 64k banks, with 16-bit addresses within
+the bank; and that the MMU will copy across bank boundaries.
+
+The mapper is much faster than the NES CPU and 
+In all modes, the lowest-mapped page cannot access underneath registers, and
+the same page can be mapped at a higher address to get those remaining bytes.
+
+Mode behaviors:
+
+                    Mode 0 |Mode 1 |Mode 2 |Mode 3
+Low RAM Pages.......14     |7      |7      |7
+Low RAM Page Size...2048   |4096   |4096   |4096
+Low RAM Max.........8MB    |16MB   |16MB   |16MB
+High RAM Pages......2      |2      |1      |1
+High RAM Page Size..8192   |8192   |16384  |16384
+High RAM Max........32MB   |32MB   |64MB   |128MB
+High RAM Offset.....0      |0      |0      |64MB
+  
+Mode 1 is a convenience mode to access the bottom 16MB in Low RAM.
+
+Modes 2 and 3 are identical except that Mode 3 accesses 64MB-128MB in the
+backing ROM or RAM in Mode 3.  Because Modes 2 and 3 only ever map one page
+into High RAM/ROM, a switch between modes is no different than a switch
+between pages.
+
+==================
+= Register Files =
+==================
+
+Each register file is 25 bytes, consuming 200 bytes of FPGA RAM in total. A
+switch of the register file changes the mappings and mode to any one of eight
+settings.  This allows program code in various contexts (major subroutines and
+code cores) to operate on a dedicated register file, setting their mappings
+dynamically.  Any switch to a different context would simply change the
+register file.
+
+In Mode 0, the 14 Low-RAM registers require 21 bytes; however, in modes 1-3,
+there are only 7 Low-RAM.  The half-register selector toggles between
+registers 0-7 and registers 8-14 in these modes, and is zero in Mode 0.
+
+Likewise, in Modes 0 and 1, High-RAM registers require 3 bytes; and Modes 2
+and 3 only map one page, so only require one register.  The half-register
+selector toggles between these two registers when in Modes 2 and 3.
+
+These half-register toggles give twice as many register files in Modes 2 and
+3, and double the number of register files available for Low-RAM in Modes 1-3.
+This allows a sort of task switching, wherein a subroutine's syscall might
+reflect through an address in the 4K fixed PRG-ROM, which itself contains a
+stub to switch the register file and make a direct jump.
+
+A Mode 1 game can have a total of 16 Low-RAM register files paired with 8
+High-RAM register files.
+
+==================
+= Mode Switching =
+==================
+
+It's possible to switch modes dynamically.  Notably:
+
+ - Mode 2 and 3 simply change the High-RAM page
+ - Mode 1 retains all Low-RAM pages, but changes High-RAM
+
+Thus as long as you're not executing the mode switch inside High-RAM, it's
+safe to switch between Modes 1, 2, and 3.
+
+Switching between Mode 1 to Modes 2 or 3 carries additional considerations:
+the lower half of High-RAM will be mapped by the lower High-RAM register in
+Mode 1, so it's safe to call a Mode Switch between these when executing in the
+lower half of High-RAM with the Half-file bit set to 0.
+
+Likewise, Mode 0 carries the same regard when switching to Modes 2 or 3; and
+similar applies to Low-RAM, in that pages become 2048 bytes and the bottom
+half of each mapped page is mapped in.
+
+In general, it's safe to switch between modes from code in the first 2048
+bytes of Low-RAM when the Half-file bit is set to 0, and safest to switch
+between modes by calling a function in fixed PRG ROM that carries out both a
+mode switch and register file setup.
+
+In summary:
+
+ - Switching between Modes 1, 2, and 3 is routine from Low-RAM
+ - Switching between Modes 0 and 1 is routine from High-RAM
+ - Never switch between Modes 0 and 1 when executing in Low-RAM
+ - Never switch between any other pair of modes from High-RAM
+ - A helper routine in fixed PRG ROM is a safe option
+
+===========================================
+= PREEMPTIVE AND COOPERATIVE MULTITASKING =
+===========================================
+
+It's possible to use the NMI to implement preemptive multi-tasking, such that
+a register file is written only from the OS.  Each process would need a
+process ID for tracking, and its data must be stored in a table.
+
+To switch out of a task upon NMI, create a subroutine in fixed PRG-ROM that:
+
+ - Pushes A, X, and Y to the Stack (PC and P are pushed by NMI)
+ - Records the Register File index in A
+ - Switches to Register File 0
+ - Records S and the Register File index into the OS process table
+ - Copies $0100-$01FF into the OS Process Table
+
+Note the following operators:
+
+OPERATOR          CYCLES  BYTES
+LDA absolute,X    4       3
+PLA               4       1
+PHA               3       1
+STA absolute,X    5       3
+STA indirect,Y    6       3
+TSX               2       1
+TXA               2       1
+TAY               2       1
+DEY               2       1
+SBC #immediate    2       2
+
+An efficient stack copy routine might be:
+
+; Put the OS table's stack base into a zero-page address first!
+; That address is referenced as $ZPStackBase
+; Get SP into Y
+TSX
+TXA
+SBC #$ff  ;
+TAY
+INY ; fix the off-by-one 
+CopyStack:
+  PLA    ; Put next stack byte into A
+  STA ($ZPStackBase),Y ; Store into table
+  INY
+  BNE @CopyStack  ; Loop until Y is zero
+
+Size:  15 bytes
+Cycles:  10 plus 12 per byte = 3,082 cycles to copy a full stack
+
+To switch into a task, create a subroutine in the 5K fixed PRG-ROM:
+
+ - Identify if the process is using a Register File other than zero; else:
+   - Identify a least-recently-used process
+   - Switch to the process's Register File
+   - Copy the Register File (25 bytes) to NES main RAM
+   - Switch to Register File 0
+   - Record the contents of the Register File (mappings, mode) for the LRU
+     process in the OS process table
+   - Mark the LRU process's Register File Index as 0
+   - Copy the Register File
+   - Switch the Register File to that associated with the LRU process
+   - Copies the scheduled process's Register File into the register
+   - Marks the scheduled process's Register File Index as the current File
+ - Restores A, X, Y, and S (PC and P should be on the stack already)
+ - Re-enters the process
+
+If using fewer than 8 processes, the register files are never copied.
+
+Note that the stack must be copied in both directions.  As the VBLANK NMI
+allows for around 29,000 cycles, this gets expensive.  For example, if your
+stack is in practice 64 bytes at that point, then this costs 778 cycles.
+
+One way around this is to finish your subroutine within 29,000 cycles,
+returning back up to its entrypoint and ultimately back into the OS.  An empty
+stack doesn't need to be stored.
+
+For ongoing processes, such as the main loop, keep your stack shallow.
+Consider YIELDING, a cooperative multitasking approach where a process retuns
+control to the operating system mid-run, at low points in your stack.  If the
+OS has nothing else to run, it can re-enter without saving the stack; else it
+can task switch out and save the stack.
+
+You can also context the stack height.  If you know your music and controller
+input tasks go 30 bytes deep and your stack has only 100 bytes used, simply
+record the structure of the stack and delay stack copy-out.
+
+Your main processes can also call a YIELD-TO-FRAME to tell the OS it doesn't
+need to worry about them until VBLANK, and the OS can perform housekeeping
+until it gets an NMI.
+
+With the right planning, you can avoid most of this process management
+overhead and get your music and physics running at-speed even when your
+framerate drops.
+
+FIXME:  Add CPU 2K RAM shadow, Process Store helper, Process Restore helper
+
+==============
+= Extensions =
+==============
+
+Basic extensions include VRC6 audio at $4044-$4053
+
+START   END     USE
+$4044   $4053   VRC6 Audio
+$4054   $4054   Filesystem
+$4055   $4055   Networking
+
+
+Both extensions should be zero-copy DMA, e.g. the data will be in some area of
+PRG RAM or will be written directly to some area of PRG RAM.
+
+FIXME:  Add Filesystem extension
+
+Example workflow:
+
+  - Write destination address, file offset, and copy length
+  - Append '\0'-terminated filename
+  - Wait for $4044 to equal 0
+  - Write appropriate 8-bit operator trigger to $4044
+  - Test $4044 to see if equal to 0
+
+It's possible to call the OS to preload things, and to ask the OS if the
+preload is finished before switching into new code or data.  Because OS can
+test $4044, it can block a process or provide status updates about loading
+progress.
+
+A 16k block can require more than 35 CPU cycles to copy by this method.
+
+FIXME:  Add Network extension
+
+
+========================
+= VRC6 Audio Extension =
+========================
+
+The VRC6 audio Extension begins at $404
